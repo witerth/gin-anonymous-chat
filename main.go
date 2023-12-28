@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 
@@ -16,9 +17,10 @@ import (
 var db *sql.DB
 
 type Message struct {
-	Message  string `json:"message"`
-	Time     string `json:"time"`
-	UserInfo string `json:"userInfo"`
+	ID       int      `json:"id"`
+	Message  string   `json:"message"`
+	Time     string   `json:"time"`
+	UserInfo UserInfo `json:"userInfo"`
 }
 
 type UserInfo struct {
@@ -43,7 +45,7 @@ var sockets sync.Map
 
 func initDB() {
 	var err error
-	db, err = sql.Open("mysql", "witerth:witerth@tcp(localhost:3306)/database?charset=utf8&parseTime=True&loc=Local")
+	db, err = sql.Open("mysql", "witerth:witerth@tcp(121.41.44.122:3306)/database?charset=utf8&parseTime=True&loc=Local")
 	if err != nil {
 		log.Fatalf("Failed to connect to the database: %v", err)
 	}
@@ -73,8 +75,8 @@ func main() {
 	// POST 路由 - 获取消息
 	r.POST("/history", func(c *gin.Context) {
 		var requestData struct {
-			Time   string `json:"time"`
-			UserId string `json:"userId"`
+			ID    int `json:"id"`
+			LIMIT int `json:"limit"`
 		}
 
 		if err := c.ShouldBindJSON(&requestData); err != nil {
@@ -82,62 +84,28 @@ func main() {
 			return
 		}
 
-		// 解析时间戳
-		// timeStamp, err := time.Parse(time.RFC3339, requestData.Time)
-		// if err != nil {
-		// 	c.JSON(400, gin.H{"error": "Invalid timestamp format"})
-		// 	return
-		// }
-
 		var rows *sql.Rows
+		var err error
 
 		// 如果未提供时间参数，则默认获取最后 50 条数据
-		if requestData.Time == "" {
-			rows, err := db.Query("SELECT message, time, user_info FROM messages ORDER BY time DESC LIMIT 10")
-			if err != nil {
-				c.JSON(500, gin.H{"error": err.Error()})
-				return
-			}
-			defer rows.Close()
-
-			var messages []SendData
-			for rows.Next() {
-				var msg SendData
-				var userInfoStr string
-				err := rows.Scan(&msg.Message, &msg.Time, &userInfoStr)
-				if err != nil {
-					c.JSON(500, gin.H{"error": err.Error()})
-					return
-				}
-
-				// 解码 user_info 字段到 UserInfo 结构体
-				err = json.Unmarshal([]byte(userInfoStr), &msg.UserInfo)
-				if err != nil {
-					c.JSON(500, gin.H{"error": "Failed to unmarshal UserInfo"})
-					return
-				}
-
-				messages = append(messages, msg)
-			}
-
-			c.JSON(200, messages)
-			return
+		if requestData.ID > 0 {
+			rows, err = db.Query("SELECT id, message, time, user_info FROM messages WHERE id < ? ORDER BY id DESC LIMIT ?",
+				requestData.ID, requestData.LIMIT)
+		} else {
+			rows, err = db.Query("SELECT id, message, time, user_info FROM messages ORDER BY id DESC LIMIT ?", requestData.LIMIT)
 		}
 
-		// 获取该时间和对应 userId 前的 50 条数据
-		rows, err := db.Query("SELECT message, time, user_info FROM messages WHERE time < ? AND user_id = ? LIMIT 10",
-			requestData.Time, requestData.UserId)
 		if err != nil {
 			c.JSON(500, gin.H{"error": err.Error()})
 			return
 		}
 		defer rows.Close()
 
-		var messages []SendData
+		var messages []Message
 		for rows.Next() {
-			var msg SendData
+			var msg Message
 			var userInfoStr string
-			err := rows.Scan(&msg.Message, &msg.Time, &userInfoStr)
+			err := rows.Scan(&msg.ID, &msg.Message, &msg.Time, &userInfoStr)
 			if err != nil {
 				c.JSON(500, gin.H{"error": err.Error()})
 				return
@@ -153,7 +121,13 @@ func main() {
 			messages = append(messages, msg)
 		}
 
+		// 对数据按时间升序排列
+		sort.Slice(messages, func(i, j int) bool {
+			return messages[i].Time < messages[j].Time
+		})
+
 		c.JSON(200, messages)
+
 	})
 
 	// POST 路由
